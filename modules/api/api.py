@@ -9,7 +9,7 @@ import requests
 import gradio as gr
 from threading import Lock
 from io import BytesIO
-from fastapi import APIRouter, Depends, FastAPI, Request, Response
+from fastapi import APIRouter, Depends, FastAPI, Request, Response, UploadFile, File
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.exceptions import HTTPException
 from fastapi.responses import JSONResponse
@@ -34,6 +34,63 @@ import piexif
 import piexif.helper
 from contextlib import closing
 
+import random
+from pathlib import Path
+
+INPUT_SAVE_DIR = Path("../data/input")
+OUTPUT_SAVE_DIR = Path("../data/output")
+
+INPUT_SAVE_DIR.mkdir(parents=True, exist_ok=True)
+OUTPUT_SAVE_DIR.mkdir(parents=True, exist_ok=True)
+
+class DEFAULT_PARAMS():
+    def __init__(self, checkpoint_path, prompt, negative_prompt, steps, cfg_scale, denoising_strength, seed):
+        self.checkpoint_path = checkpoint_path
+        self.prompt = prompt
+        self.negative_prompt = negative_prompt
+        self.steps = steps
+        self.cfg_scale = cfg_scale
+        self.denoising_strength = denoising_strength
+        self.seed = seed
+
+
+PARAMS = {  "sd_anime": DEFAULT_PARAMS(
+                           checkpoint_path = "aamAnyloraAnimeMixAnime_v1.safetensors",
+                           prompt = "modern anime, 2000s anime, anime style, best quality, masterpiece",
+                           negative_prompt = "(worst quality:1.5), (low quality:1.5), (normal quality:1.5), lowres, bad anatomy, vaginas in breasts, ((monochrome)), ((grayscale)), collapsed eyeshadow, multiple eyeblows, (cropped), oversaturated,sexy, errors, signature, watermark, jpeg artifacts, blurry, wrong gender, dented, missing limbs, extra limbs,  deformed hand, long neck, username, artist name, conjoined fingers, deformed fingers, ugly eyes, imperfect eyes, skewed eyes, unnatural face, unnatural body, error, painting by bad-artist",
+                           steps = 40,
+                           cfg_scale = 30,
+                           denoising_strength = 0.6,
+                           seed=2412614579),
+            "sd_disney": DEFAULT_PARAMS(
+                           checkpoint_path = "disneyPixarCartoon_v10.safetensors",
+                           prompt = "disney style",
+                           negative_prompt = "(worst quality:1.5), (low quality:1.5), (normal quality:1.5), lowres, bad anatomy, vaginas in breasts, ((monochrome)), ((grayscale)), collapsed eyeshadow, multiple eyeblows, (cropped), oversaturated,sexy, errors, signature, watermark, jpeg artifacts, blurry, wrong gender, dented, missing limbs, extra limbs,  deformed hand, long neck, username, artist name, conjoined fingers, deformed fingers, ugly eyes, imperfect eyes, skewed eyes, unnatural face, unnatural body, error, painting by bad-artist",
+                           steps = 40,
+                           cfg_scale=30,
+                           denoising_strength = 0.6,
+                           seed=2412614579)
+          }
+
+def generate_name():
+    name = 'GENimg2img_'
+    for i in range(random.randint(5, 10)):
+        name += random.choice('QAZXfrSWEDCVFRTqazxswgbnhyujmkiolpGBNHYUJedcvtMKIOLP')
+        
+    # Append current timestamp (in seconds) to the name
+    timestamp = int(time.time())
+    name += f'_{timestamp}'   
+
+    return name
+
+def cal_relative_scale(width, height, max_width, max_height):
+    if width > max_width or height > max_height:
+        scale = max_width / width
+        if height * scale > max_height:
+            scale = max_height / height
+        return scale
+    else:
+        return 1
 
 def script_name_to_index(name, scripts):
     try:
@@ -209,40 +266,43 @@ class Api:
         self.app = app
         self.queue_lock = queue_lock
         api_middleware(self.app)
-        self.add_api_route("/sdapi/v1/txt2img", self.text2imgapi, methods=["POST"], response_model=models.TextToImageResponse)
-        self.add_api_route("/sdapi/v1/img2img", self.img2imgapi, methods=["POST"], response_model=models.ImageToImageResponse)
-        self.add_api_route("/sdapi/v1/extra-single-image", self.extras_single_image_api, methods=["POST"], response_model=models.ExtrasSingleImageResponse)
-        self.add_api_route("/sdapi/v1/extra-batch-images", self.extras_batch_images_api, methods=["POST"], response_model=models.ExtrasBatchImagesResponse)
-        self.add_api_route("/sdapi/v1/png-info", self.pnginfoapi, methods=["POST"], response_model=models.PNGInfoResponse)
-        self.add_api_route("/sdapi/v1/progress", self.progressapi, methods=["GET"], response_model=models.ProgressResponse)
-        self.add_api_route("/sdapi/v1/interrogate", self.interrogateapi, methods=["POST"])
-        self.add_api_route("/sdapi/v1/interrupt", self.interruptapi, methods=["POST"])
-        self.add_api_route("/sdapi/v1/skip", self.skip, methods=["POST"])
+        # self.add_api_route("/sdapi/v1/txt2img", self.text2imgapi, methods=["POST"], response_model=models.TextToImageResponse)
+        self.add_api_route("/sdapi/style_anime/v1/img2img", self.img2img_anime, methods=["POST"], response_model=models.ImageToImageResponse)
+        self.add_api_route("/sdapi/style_anime/v1/img2url", self.img2url_anime, methods=["POST"])
+        self.add_api_route("/sdapi/style_disney/v1/img2img", self.img2img_disney, methods=["POST"], response_model=models.ImageToImageResponse)
+        self.add_api_route("sdapi/style_disney/v1/img2url", self.img2url_disney, methods=["POST"])
+        # self.add_api_route("/sdapi/v1/extra-single-image", self.extras_single_image_api, methods=["POST"], response_model=models.ExtrasSingleImageResponse)
+        # self.add_api_route("/sdapi/v1/extra-batch-images", self.extras_batch_images_api, methods=["POST"], response_model=models.ExtrasBatchImagesResponse)
+        # self.add_api_route("/sdapi/v1/png-info", self.pnginfoapi, methods=["POST"], response_model=models.PNGInfoResponse)
+        # self.add_api_route("/sdapi/v1/progress", self.progressapi, methods=["GET"], response_model=models.ProgressResponse)
+        # self.add_api_route("/sdapi/v1/interrogate", self.interrogateapi, methods=["POST"])
+        # self.add_api_route("/sdapi/v1/interrupt", self.interruptapi, methods=["POST"])
+        # self.add_api_route("/sdapi/v1/skip", self.skip, methods=["POST"])
         self.add_api_route("/sdapi/v1/options", self.get_config, methods=["GET"], response_model=models.OptionsModel)
         self.add_api_route("/sdapi/v1/options", self.set_config, methods=["POST"])
-        self.add_api_route("/sdapi/v1/cmd-flags", self.get_cmd_flags, methods=["GET"], response_model=models.FlagsModel)
-        self.add_api_route("/sdapi/v1/samplers", self.get_samplers, methods=["GET"], response_model=List[models.SamplerItem])
-        self.add_api_route("/sdapi/v1/upscalers", self.get_upscalers, methods=["GET"], response_model=List[models.UpscalerItem])
-        self.add_api_route("/sdapi/v1/latent-upscale-modes", self.get_latent_upscale_modes, methods=["GET"], response_model=List[models.LatentUpscalerModeItem])
-        self.add_api_route("/sdapi/v1/sd-models", self.get_sd_models, methods=["GET"], response_model=List[models.SDModelItem])
-        self.add_api_route("/sdapi/v1/sd-vae", self.get_sd_vaes, methods=["GET"], response_model=List[models.SDVaeItem])
-        self.add_api_route("/sdapi/v1/hypernetworks", self.get_hypernetworks, methods=["GET"], response_model=List[models.HypernetworkItem])
-        self.add_api_route("/sdapi/v1/face-restorers", self.get_face_restorers, methods=["GET"], response_model=List[models.FaceRestorerItem])
-        self.add_api_route("/sdapi/v1/realesrgan-models", self.get_realesrgan_models, methods=["GET"], response_model=List[models.RealesrganItem])
-        self.add_api_route("/sdapi/v1/prompt-styles", self.get_prompt_styles, methods=["GET"], response_model=List[models.PromptStyleItem])
-        self.add_api_route("/sdapi/v1/embeddings", self.get_embeddings, methods=["GET"], response_model=models.EmbeddingsResponse)
-        self.add_api_route("/sdapi/v1/refresh-checkpoints", self.refresh_checkpoints, methods=["POST"])
-        self.add_api_route("/sdapi/v1/refresh-vae", self.refresh_vae, methods=["POST"])
-        self.add_api_route("/sdapi/v1/create/embedding", self.create_embedding, methods=["POST"], response_model=models.CreateResponse)
-        self.add_api_route("/sdapi/v1/create/hypernetwork", self.create_hypernetwork, methods=["POST"], response_model=models.CreateResponse)
-        self.add_api_route("/sdapi/v1/preprocess", self.preprocess, methods=["POST"], response_model=models.PreprocessResponse)
-        self.add_api_route("/sdapi/v1/train/embedding", self.train_embedding, methods=["POST"], response_model=models.TrainResponse)
-        self.add_api_route("/sdapi/v1/train/hypernetwork", self.train_hypernetwork, methods=["POST"], response_model=models.TrainResponse)
-        self.add_api_route("/sdapi/v1/memory", self.get_memory, methods=["GET"], response_model=models.MemoryResponse)
-        self.add_api_route("/sdapi/v1/unload-checkpoint", self.unloadapi, methods=["POST"])
-        self.add_api_route("/sdapi/v1/reload-checkpoint", self.reloadapi, methods=["POST"])
-        self.add_api_route("/sdapi/v1/scripts", self.get_scripts_list, methods=["GET"], response_model=models.ScriptsList)
-        self.add_api_route("/sdapi/v1/script-info", self.get_script_info, methods=["GET"], response_model=List[models.ScriptInfo])
+        # self.add_api_route("/sdapi/v1/cmd-flags", self.get_cmd_flags, methods=["GET"], response_model=models.FlagsModel)
+        # self.add_api_route("/sdapi/v1/samplers", self.get_samplers, methods=["GET"], response_model=List[models.SamplerItem])
+        # self.add_api_route("/sdapi/v1/upscalers", self.get_upscalers, methods=["GET"], response_model=List[models.UpscalerItem])
+        # self.add_api_route("/sdapi/v1/latent-upscale-modes", self.get_latent_upscale_modes, methods=["GET"], response_model=List[models.LatentUpscalerModeItem])
+        # self.add_api_route("/sdapi/v1/sd-models", self.get_sd_models, methods=["GET"], response_model=List[models.SDModelItem])
+        # self.add_api_route("/sdapi/v1/sd-vae", self.get_sd_vaes, methods=["GET"], response_model=List[models.SDVaeItem])
+        # self.add_api_route("/sdapi/v1/hyqueue_lockpernetworks", self.get_hypernetworks, methods=["GET"], response_model=List[models.HypernetworkItem])
+        # self.add_api_route("/sdapi/v1/face-restorers", self.get_face_restorers, methods=["GET"], response_model=List[models.FaceRestorerItem])
+        # self.add_api_route("/sdapi/v1/realesrgan-models", self.get_realesrgan_models, methods=["GET"], response_model=List[models.RealesrganItem])
+        # self.add_api_route("/sdapi/v1/prompt-styles", self.get_prompt_styles, methods=["GET"], response_model=List[models.PromptStyleItem])
+        # self.add_api_route("/sdapi/v1/embeddings", self.get_embeddings, methods=["GET"], response_model=models.EmbeddingsResponse)
+        # self.add_api_route("/sdapi/v1/refresh-checkpoints", self.refresh_checkpoints, methods=["POST"])
+        # self.add_api_route("/sdapi/v1/refresh-vae", self.refresh_vae, methods=["POST"])
+        # self.add_api_route("/sdapi/v1/create/embedding", self.create_embedding, methods=["POST"], response_model=models.CreateResponse)
+        # self.add_api_route("/sdapi/v1/create/hypernetwork", self.create_hypernetwork, methods=["POST"], response_model=models.CreateResponse)
+        # self.add_api_route("/sdapi/v1/preprocess", self.preprocess, methods=["POST"], response_model=models.PreprocessResponse)
+        # self.add_api_route("/sdapi/v1/train/embedding", self.train_embedding, methods=["POST"], response_model=models.TrainResponse)
+        # self.add_api_route("/sdapi/v1/train/hypernetwork", self.train_hypernetwork, methods=["POST"], response_model=models.TrainResponse)
+        # self.add_api_route("/sdapi/v1/memory", self.get_memory, methods=["GET"], response_model=models.MemoryResponse)
+        # self.add_api_route("/sdapi/v1/unload-checkpoint", self.unloadapi, methods=["POST"])
+        # self.add_api_route("/sdapi/v1/reload-checkpoint", self.reloadapi, methods=["POST"])
+        # self.add_api_route("/sdapi/v1/scripts", self.get_scripts_list, methods=["GET"], response_model=models.ScriptsList)
+        # self.add_api_route("/sdapi/v1/script-info", self.get_script_info, methods=["GET"], response_model=List[models.ScriptInfo])
 
         if shared.cmd_opts.api_server_stop:
             self.add_api_route("/sdapi/v1/server-kill", self.kill_webui, methods=["POST"])
@@ -297,8 +357,11 @@ class Api:
         #find max idx from the scripts in runner and generate a none array to init script_args
         last_arg_index = 1
         for script in script_runner.scripts:
-            if last_arg_index < script.args_to:
-                last_arg_index = script.args_to
+            try:
+                if last_arg_index < script.args_to:
+                    last_arg_index = script.args_to
+            except:
+                print("lost script",script, script.args_to)
         # None everywhere except position 0 to initialize script args
         script_args = [None]*last_arg_index
         script_args[0] = 0
@@ -386,7 +449,156 @@ class Api:
 
         return models.TextToImageResponse(images=b64images, parameters=vars(txt2imgreq), info=processed.js())
 
-    def img2imgapi(self, img2imgreq: models.StableDiffusionImg2ImgProcessingAPI):
+    async def img2img_anime(self, image:UploadFile=File(...)):
+        # image_data = image.file.read()
+        print("execute img2img_anime")
+        return self.img2imgapi(image=image, style="sd_anime")
+    
+    async def img2url_anime(self, image:UploadFile=File(...)):
+        return self.img2urlapi(image=image, style="sd_anime")
+
+    async def img2img_disney(self, image:UploadFile=File(...)):
+        return self.img2imgapi(image=image, style="sd_disney")
+    
+    async def img2url_disney(self, image:UploadFile=File(...)):
+        return self.img2urlapi(image=image, style="sd_disney")
+
+    def img2urlapi(self, image, style):
+        # Reload weight
+        option_payload = {"sd_model_checkpoint": PARAMS[style].checkpoint_path}
+        self.set_config(option_payload)
+        image_data = image.file.read()
+        # Required
+        img2imgreq = models.StableDiffusionImg2ImgProcessingAPI()
+        img2imgreq.init_images = [base64.b64encode(image_data).decode('utf-8')]
+        # Get relative scale image
+        image = Image.open(io.BytesIO(image_data))
+        width, height = image.size
+        scale_by = cal_relative_scale(width, height, 768, 768)
+        name = generate_name()
+
+        # Save input
+        filedir = INPUT_SAVE_DIR/f"input_image_{style}"
+        filedir.mkdir(parents=True, exist_ok=True)
+        filename = filedir/ f"{name}.png"
+        image.save(filename)
+
+        img2imgreq.width  = int(width*scale_by)
+        img2imgreq.height = int(height*scale_by)
+
+        # Default
+        img2imgreq.prompt = PARAMS[style].prompt
+        img2imgreq.negative_prompt = PARAMS[style].negative_prompt
+        img2imgreq.steps = PARAMS[style].steps
+        img2imgreq.cfg_scale = PARAMS[style].cfg_scale
+        img2imgreq.denoising_strength = PARAMS[style].denoising_strength
+        img2imgreq.seed = PARAMS[style].seed
+
+        init_images = img2imgreq.init_images
+        if init_images is None:
+            raise HTTPException(status_code=404, detail="Init image not found")
+
+        mask = img2imgreq.mask
+        if mask:
+            mask = decode_base64_to_image(mask)
+
+        script_runner = scripts.scripts_img2img
+        if not script_runner.scripts:
+            script_runner.initialize_scripts(True)
+            ui.create_ui()
+
+        if not self.default_script_arg_img2img:
+            self.default_script_arg_img2img = self.init_default_script_args(script_runner)
+        selectable_scripts, selectable_script_idx = self.get_selectable_script(img2imgreq.script_name, script_runner)
+
+        populate = img2imgreq.copy(update={  # Override __init__ params
+            "sampler_name": validate_sampler_name(img2imgreq.sampler_name or img2imgreq.sampler_index),
+            "do_not_save_samples": not img2imgreq.save_images,
+            "do_not_save_grid": not img2imgreq.save_images,
+            "mask": mask,
+        })
+        if populate.sampler_name:
+            populate.sampler_index = None  # prevent a warning later on
+
+        args = vars(populate)
+        args.pop('include_init_images', None)  # this is meant to be done by "exclude": True in model, but it's for a reason that I cannot determine.
+        args.pop('script_name', None)
+        args.pop('script_args', None)  # will refeed them to the pipeline directly after initializing them
+        args.pop('alwayson_scripts', None)
+
+        script_args = self.init_script_args(img2imgreq, self.default_script_arg_img2img, selectable_scripts, selectable_script_idx, script_runner)
+
+        send_images = args.pop('send_images', True)
+        args.pop('save_images', None)
+        with self.queue_lock:
+            with closing(StableDiffusionProcessingImg2Img(sd_model=shared.sd_model, **args)) as p:
+                p.init_images = [decode_base64_to_image(x) for x in init_images]
+                p.is_api = True
+                p.scripts = script_runner
+                p.outpath_grids = opts.outdir_img2img_grids
+                p.outpath_samples = opts.outdir_img2img_samples
+
+                try:
+                    shared.state.begin(job="scripts_img2img")
+                    if selectable_scripts is not None:
+                        p.script_args = script_args
+                        processed = scripts.scripts_img2img.run(p, *p.script_args) # Need to pass args as list here
+                    else:
+                        p.script_args = tuple(script_args) # Need to pass args as tuple here
+                        processed = process_images(p)
+                finally:
+                    shared.state.end()
+                    shared.total_tqdm.clear()
+
+        # b64images = list(map(encode_pil_to_base64, processed.images)) if send_images else []
+
+        if not img2imgreq.include_init_images:
+            img2imgreq.init_images = None
+            img2imgreq.mask = None
+
+        # Save output
+        generated_image = processed.images[0]
+        filename = f"output_image_{style}"
+        output_path = OUTPUT_SAVE_DIR / filename 
+        output_path.mkdir(parents=True, exist_ok=True)
+        filename =  f"{filename}/{name}.png"
+        output_path = output_path / f"{name}.png"
+        generated_image.save(output_path)
+        
+        output = str("https://ai-storage-service-1.bsmart.city/"+filename)
+        return dict(result=output)
+
+
+    def img2imgapi(self, image, style):
+        # self.set_config(dict(sd_model_checkpoint=PARAMS[style].checkpoint_path))
+        option_payload = {"sd_model_checkpoint": PARAMS[style].checkpoint_path}
+        self.set_config(option_payload)
+        image_data = image.file.read()
+        # Required
+        img2imgreq = models.StableDiffusionImg2ImgProcessingAPI()
+        img2imgreq.init_images = [base64.b64encode(image_data).decode('utf-8')]
+        # Get relative scale image
+        image = Image.open(io.BytesIO(image_data))
+        width, height = image.size
+        scale_by = cal_relative_scale(width, height, 768, 768)
+        name = generate_name()
+
+        # Save input
+        filedir = INPUT_SAVE_DIR/f"input_image_{style}"
+        filedir.mkdir(parents=True, exist_ok=True)
+        filename = filedir/ f"{name}.png"
+        image.save(filename)
+        img2imgreq.width  = int(width*scale_by)
+        img2imgreq.height = int(height*scale_by)
+
+        # Default
+        img2imgreq.prompt = PARAMS[style].prompt
+        img2imgreq.negative_prompt = PARAMS[style].negative_prompt
+        img2imgreq.steps = PARAMS[style].steps
+        img2imgreq.cfg_scale = PARAMS[style].cfg_scale
+        img2imgreq.denoising_strength = PARAMS[style].denoising_strength
+        img2imgreq.seed = PARAMS[style].seed
+
         init_images = img2imgreq.init_images
         if init_images is None:
             raise HTTPException(status_code=404, detail="Init image not found")
@@ -422,7 +634,7 @@ class Api:
 
         send_images = args.pop('send_images', True)
         args.pop('save_images', None)
-
+ 
         with self.queue_lock:
             with closing(StableDiffusionProcessingImg2Img(sd_model=shared.sd_model, **args)) as p:
                 p.init_images = [decode_base64_to_image(x) for x in init_images]
@@ -442,14 +654,14 @@ class Api:
                 finally:
                     shared.state.end()
                     shared.total_tqdm.clear()
-
+        # print("after")
         b64images = list(map(encode_pil_to_base64, processed.images)) if send_images else []
 
         if not img2imgreq.include_init_images:
             img2imgreq.init_images = None
             img2imgreq.mask = None
 
-        return models.ImageToImageResponse(images=b64images, parameters=vars(img2imgreq), info=processed.js())
+        return models.ImageToImageResponse(images=b64images, parameters={'scale_by': scale_by})
 
     def extras_single_image_api(self, req: models.ExtrasSingleImageRequest):
         reqDict = setUpscalers(req)
@@ -573,7 +785,6 @@ class Api:
             shared.opts.set(k, v, is_api=True)
 
         shared.opts.save(shared.config_filename)
-        return
 
     def get_cmd_flags(self):
         return vars(shared.cmd_opts)
@@ -772,7 +983,11 @@ class Api:
 
     def launch(self, server_name, port, root_path):
         self.app.include_router(self.router)
-        uvicorn.run(self.app, host=server_name, port=port, timeout_keep_alive=shared.cmd_opts.timeout_keep_alive, root_path=root_path)
+        uvicorn.run(self.app,
+                    host=server_name, 
+                    port=port, 
+                    timeout_keep_alive=shared.cmd_opts.timeout_keep_alive, 
+                    root_path=root_path)
 
     def kill_webui(self):
         restart.stop_program()
@@ -785,4 +1000,3 @@ class Api:
     def stop_webui(request):
         shared.state.server_command = "stop"
         return Response("Stopping.")
-
